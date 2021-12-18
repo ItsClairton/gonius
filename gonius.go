@@ -7,12 +7,21 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/buger/jsonparser"
 )
 
 var ErrNotFound = errors.New("no results found")
+
+// TODO: create a single regex
+var (
+	stageOne   = regexp.MustCompile(`/ *\([^)]*\) */g`)
+	stageTwo   = regexp.MustCompile(`/ *\[[^\]]*]/`)
+	stageThree = regexp.MustCompile(`/feat.|ft./g`)
+	stageFour  = regexp.MustCompile(`/\s+/g`)
+)
 
 type Song struct {
 	ID  int    `json:"id"`
@@ -28,7 +37,7 @@ type Song struct {
 }
 
 func SearchSong(query string) (*Song, error) {
-	data, err := makeRequest(fmt.Sprintf("https://genius.com/api/search/multi?per_page=1&q=%s", url.QueryEscape(query)))
+	data, err := makeRequest(fmt.Sprintf("https://genius.com/api/search/multi?per_page=1&q=%s", cleanQuery(query)))
 	if err != nil {
 		return nil, err
 	}
@@ -101,4 +110,10 @@ func extractLyrics(data []byte) (lyrics string) {
 	})
 
 	return lyrics
+}
+
+func cleanQuery(query string) string {
+	query = stageOne.ReplaceAllString(stageTwo.ReplaceAllString(query, ""), "")
+	query = stageThree.ReplaceAllString(stageFour.ReplaceAllString(query, ""), "")
+	return url.QueryEscape(strings.ToLower(query))
 }
