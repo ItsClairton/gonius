@@ -17,10 +17,9 @@ var ErrNotFound = errors.New("no results found")
 
 // TODO: create a single regex
 var (
-	stageOne   = regexp.MustCompile(`/ *\([^)]*\) */g`)
-	stageTwo   = regexp.MustCompile(`/ *\[[^\]]*]/`)
-	stageThree = regexp.MustCompile(`/feat.|ft./g`)
-	stageFour  = regexp.MustCompile(`/\s+/g`)
+	stageOne   = regexp.MustCompile(` *\([^)]*\) *`)
+	stageTwo   = regexp.MustCompile(` *\[[^\]]*]`)
+	stageThree = regexp.MustCompile(` feat.|ft.`)
 )
 
 type Song struct {
@@ -114,6 +113,5 @@ func extractLyrics(data []byte) (lyrics string) {
 
 func cleanQuery(query string) string {
 	query = stageOne.ReplaceAllString(stageTwo.ReplaceAllString(query, ""), "")
-	query = stageThree.ReplaceAllString(stageFour.ReplaceAllString(query, ""), "")
-	return url.QueryEscape(strings.ToLower(query))
+	return url.QueryEscape(stageThree.ReplaceAllString(strings.ToLower(query), ""))
 }
