@@ -19,7 +19,7 @@ var ErrNotFound = errors.New("no results found")
 var (
 	stageOne   = regexp.MustCompile(` *\([^)]*\) *`)
 	stageTwo   = regexp.MustCompile(` *\[[^\]]*]`)
-	stageThree = regexp.MustCompile(` feat.|ft.`)
+	stageThree = regexp.MustCompile(`feat.|ft.`)
 )
 
 type Song struct {
@@ -32,28 +32,40 @@ type Song struct {
 	Image     string `json:"song_art_image_url"`
 	Thumbnail string `json:"song_art_image_thumbnail_url"`
 
-	Artist string `json:"artist_names"`
+	PrimaryArtist struct {
+		ID    int    `json:"2525109"`
+		Name  string `json:"name"`
+		Image string `json:"image_url"`
+	} `json:"primary_artist"`
 }
 
-func SearchSong(query string) (*Song, error) {
-	data, err := makeRequest(fmt.Sprintf("https://genius.com/api/search/multi?per_page=1&q=%s", cleanQuery(query)))
+func SearchSong(query string) ([]*Song, error) {
+	data, err := makeRequest(fmt.Sprintf("https://genius.com/api/search/multi?per_page=5&q=%s", formatQuery(query)))
 	if err != nil {
 		return nil, err
 	}
 
-	data, _, _, err = jsonparser.Get(data, "response", "sections", "[1]", "hits", "[0]", "result")
-	if err != nil {
-		if err == jsonparser.KeyPathNotFoundError {
-			return nil, ErrNotFound
-		}
+	mapper, results := map[int]bool{}, []*Song{}
+	jsonparser.ArrayEach(data, func(section []byte, dataType jsonparser.ValueType, _ int, _ error) {
+		jsonparser.ArrayEach(section, func(result []byte, _ jsonparser.ValueType, _ int, _ error) {
+			if resultType, _ := jsonparser.GetString(result, "type"); resultType == "song" {
+				if result, _, _, err = jsonparser.Get(result, "result"); err == nil {
+					var entry *Song
 
-		return nil, err
+					if err = json.Unmarshal(result, &entry); err == nil && !mapper[entry.ID] {
+						mapper[entry.ID] = true
+						results = append(results, entry)
+					}
+				}
+			}
+		}, "hits")
+	}, "response", "sections")
+
+	if len(results) == 0 {
+		return nil, ErrNotFound
 	}
 
-	var result *Song
-	err = json.Unmarshal(data, &result)
-
-	return result, err
+	return results, err
 }
 
 func (s *Song) Lyrics() (string, error) {
@@ -62,21 +74,29 @@ func (s *Song) Lyrics() (string, error) {
 		return "", err
 	}
 
-	data := strings.ReplaceAll(string(rawData), "\\", "")
+	data := string(rawData)
 
-	firstIndex := strings.Index(data, "JSON.parse('") + 12
-	lastIndex := strings.Index(data[firstIndex:], "');")
-	if firstIndex == 12 || lastIndex == -1 {
+	firstIndex := strings.Index(data, "JSON.parse('")
+	if firstIndex == -1 {
 		return "", errors.New("could not find JSON inside html")
 	}
 
-	data = data[firstIndex : firstIndex+lastIndex]
+	lastIndex := strings.Index(data[firstIndex:], "');")
+	if lastIndex == -1 {
+		return "", errors.New("could not find JSON inside html")
+	}
+
+	data = data[firstIndex+12 : firstIndex+lastIndex]
+	data = strings.ReplaceAll(data, `\\`, `\`)
+	data = strings.ReplaceAll(data, `\"`, `"`)
+	data = strings.ReplaceAll(data, `\'`, `'`)
+
 	children, _, _, err := jsonparser.Get([]byte(data), "songPage", "lyricsData", "body", "children")
 	if err != nil {
 		return "", err
 	}
 
-	return extractLyrics(children), nil
+	return strings.ReplaceAll(extractLyrics(children), `\`, ""), nil
 }
 
 func makeRequest(url string) ([]byte, error) {
@@ -100,7 +120,7 @@ func extractLyrics(data []byte) (lyrics string) {
 		case jsonparser.String:
 			lyrics += string(rawValue)
 		case jsonparser.Object:
-			if tag, _ := jsonparser.GetString(rawValue, "tag"); tag == "br" {
+			if tag, _ := jsonparser.GetString(rawValue, "tag"); tag == "br" || tag == "inread-ad" {
 				lyrics += "\n"
 			} else if data, _, _, err := jsonparser.Get(rawValue, "children"); err == nil {
 				lyrics += extractLyrics(data)
@@ -111,7 +131,7 @@ func extractLyrics(data []byte) (lyrics string) {
 	return lyrics
 }
 
-func cleanQuery(query string) string {
+func formatQuery(query string) string {
 	query = stageOne.ReplaceAllString(stageTwo.ReplaceAllString(query, ""), "")
 	return url.QueryEscape(stageThree.ReplaceAllString(strings.ToLower(query), ""))
 }
