@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/buger/jsonparser"
+	"github.com/tidwall/gjson"
 )
 
 var ErrNotFound = errors.New("no results found")
@@ -33,7 +33,7 @@ type Song struct {
 	Thumbnail string `json:"song_art_image_thumbnail_url"`
 
 	PrimaryArtist struct {
-		ID    int    `json:"2525109"`
+		ID    int    `json:"id"`
 		Name  string `json:"name"`
 		Image string `json:"image_url"`
 	} `json:"primary_artist"`
@@ -46,26 +46,21 @@ func SearchSong(query string) ([]*Song, error) {
 	}
 
 	mapper, results := map[int]bool{}, []*Song{}
-	jsonparser.ArrayEach(data, func(section []byte, dataType jsonparser.ValueType, _ int, _ error) {
-		jsonparser.ArrayEach(section, func(result []byte, _ jsonparser.ValueType, _ int, _ error) {
-			if resultType, _ := jsonparser.GetString(result, "type"); resultType == "song" {
-				if result, _, _, err = jsonparser.Get(result, "result"); err == nil {
-					var entry *Song
+	gjson.GetBytes(data, `response.sections.#.hits.#(type=="song").result`).ForEach(func(_, value gjson.Result) bool {
+		var entry *Song
 
-					if err = json.Unmarshal(result, &entry); err == nil && !mapper[entry.ID] {
-						mapper[entry.ID] = true
-						results = append(results, entry)
-					}
-				}
-			}
-		}, "hits")
-	}, "response", "sections")
+		if err := json.Unmarshal([]byte(value.String()), &entry); err == nil && !mapper[entry.ID] {
+			mapper[entry.ID], results = true, append(results, entry)
+		}
+
+		return true
+	})
 
 	if len(results) == 0 {
 		return nil, ErrNotFound
 	}
 
-	return results, err
+	return results, nil
 }
 
 func (s *Song) Lyrics() (string, error) {
@@ -86,17 +81,29 @@ func (s *Song) Lyrics() (string, error) {
 		return "", errors.New("could not find JSON inside html")
 	}
 
-	data = data[firstIndex+12 : firstIndex+lastIndex]
-	data = strings.ReplaceAll(data, `\\`, `\`)
-	data = strings.ReplaceAll(data, `\"`, `"`)
-	data = strings.ReplaceAll(data, `\'`, `'`)
+	data = strings.ReplaceAll(data[firstIndex+12:firstIndex+lastIndex], `\"`, `"`)
+	data = strings.ReplaceAll(strings.ReplaceAll(data, `\'`, `'`), `\\`, `\`)
 
-	children, _, _, err := jsonparser.Get([]byte(data), "songPage", "lyricsData", "body", "children")
-	if err != nil {
-		return "", err
-	}
+	return extractLyrics(gjson.Get(data, "songPage.lyricsData.body.children")), nil
+}
 
-	return strings.ReplaceAll(extractLyrics(children), `\`, ""), nil
+func extractLyrics(data gjson.Result) (lyrics string) {
+	data.ForEach(func(_, value gjson.Result) bool {
+		switch value.Type {
+		case gjson.String:
+			lyrics += value.String()
+		case gjson.JSON:
+			if tag := value.Get("tag").String(); tag == "br" || tag == "inread-ad" {
+				lyrics += "\n"
+			} else if value = value.Get("children"); value.Exists() {
+				lyrics += extractLyrics(value)
+			}
+		}
+
+		return true
+	})
+
+	return lyrics
 }
 
 func makeRequest(url string) ([]byte, error) {
@@ -112,23 +119,6 @@ func makeRequest(url string) ([]byte, error) {
 	}
 
 	return ioutil.ReadAll(res.Body)
-}
-
-func extractLyrics(data []byte) (lyrics string) {
-	jsonparser.ArrayEach(data, func(rawValue []byte, dataType jsonparser.ValueType, _ int, _ error) {
-		switch dataType {
-		case jsonparser.String:
-			lyrics += string(rawValue)
-		case jsonparser.Object:
-			if tag, _ := jsonparser.GetString(rawValue, "tag"); tag == "br" || tag == "inread-ad" {
-				lyrics += "\n"
-			} else if data, _, _, err := jsonparser.Get(rawValue, "children"); err == nil {
-				lyrics += extractLyrics(data)
-			}
-		}
-	})
-
-	return lyrics
 }
 
 func formatQuery(query string) string {
