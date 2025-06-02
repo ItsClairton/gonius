@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -14,13 +14,7 @@ import (
 )
 
 var ErrNotFound = errors.New("no results found")
-
-// TODO: create a single regex
-var (
-	stageOne   = regexp.MustCompile(` *\([^)]*\) *`)
-	stageTwo   = regexp.MustCompile(` *\[[^\]]*]`)
-	stageThree = regexp.MustCompile(`feat.|ft.`)
-)
+var responsePattern = regexp.MustCompile(`window\.__PRELOADED_STATE__ = JSON\.parse\('(.*?)'\);`)
 
 type Song struct {
 	ID  int    `json:"id"`
@@ -40,7 +34,7 @@ type Song struct {
 }
 
 func SearchSong(query string) ([]*Song, error) {
-	data, err := makeRequest(fmt.Sprintf("https://genius.com/api/search/multi?per_page=5&q=%s", formatQuery(query)))
+	data, err := makeRequest(fmt.Sprintf("https://genius.com/api/search/multi?per_page=5&q=%s", url.QueryEscape(query)))
 	if err != nil {
 		return nil, err
 	}
@@ -63,28 +57,31 @@ func SearchSong(query string) ([]*Song, error) {
 	return results, nil
 }
 
-func (s *Song) Lyrics() (string, error) {
-	rawData, err := makeRequest(s.URL)
+func GetLyrics(songURL string) (string, error) {
+	rawData, err := makeRequest(songURL)
 	if err != nil {
+		if err.Error() == "the server responded with unexpected 404 Not Found status" {
+			return "", ErrNotFound
+		}
+
 		return "", err
 	}
 
 	data := string(rawData)
 
-	firstIndex := strings.Index(data, "JSON.parse('")
-	if firstIndex == -1 {
-		return "", errors.New("could not find JSON inside html")
+	matches := responsePattern.FindStringSubmatch(data)
+	if len(matches) < 2 {
+		return "", errors.New("could not extract JSON from HTML")
 	}
 
-	lastIndex := strings.Index(data[firstIndex:], "');")
-	if lastIndex == -1 {
-		return "", errors.New("could not find JSON inside html")
-	}
-
-	data = strings.ReplaceAll(data[firstIndex+12:firstIndex+lastIndex], `\"`, `"`)
+	data = strings.ReplaceAll(matches[1], `\"`, `"`)
 	data = strings.ReplaceAll(strings.ReplaceAll(data, `\'`, `'`), `\\`, `\`)
 
 	return extractLyrics(gjson.Get(data, "songPage.lyricsData.body.children")), nil
+}
+
+func (s *Song) Lyrics() (string, error) {
+	return GetLyrics(s.URL)
 }
 
 func extractLyrics(data gjson.Result) (lyrics string) {
@@ -118,10 +115,5 @@ func makeRequest(url string) ([]byte, error) {
 		return nil, fmt.Errorf("the server responded with unexpected %s status", res.Status)
 	}
 
-	return ioutil.ReadAll(res.Body)
-}
-
-func formatQuery(query string) string {
-	query = stageOne.ReplaceAllString(stageTwo.ReplaceAllString(query, ""), "")
-	return url.QueryEscape(stageThree.ReplaceAllString(strings.ToLower(query), ""))
+	return io.ReadAll(res.Body)
 }
